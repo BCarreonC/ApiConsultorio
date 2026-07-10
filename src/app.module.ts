@@ -8,6 +8,11 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { UsersModule } from './modules/users/users.module';
 import { DoctorsModule } from './modules/doctors/doctors.module';
+import { PatientsModule } from './modules/patients/patients.module';
+import { AppointmentsModule } from './modules/appointments/appointments.module';
+import { ConsultationsModule } from './modules/consultations/consultations.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
+import { AIModule } from './modules/ai/ai.module';
 
 @Module({
   imports: [
@@ -24,6 +29,16 @@ import { DoctorsModule } from './modules/doctors/doctors.module';
     UsersModule,
 
     DoctorsModule,
+
+    PatientsModule,
+
+    AppointmentsModule,
+
+    ConsultationsModule,
+
+    NotificationsModule,
+
+    AIModule,
   ],
   controllers: [AppController],
   providers: [AppService],
