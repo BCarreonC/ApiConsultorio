@@ -1,14 +1,8 @@
-import {
-  IsEmail,
-  IsEnum,
-  IsString,
-  MinLength,
-} from 'class-validator';
+import { IsEmail, IsEnum, IsString, MinLength } from 'class-validator';
 
 import { UserRole } from '../constants/roles.constant';
 
 export class CreateUserDto {
-
   @IsString()
   fullName: string;
 
@@ -21,5 +15,4 @@ export class CreateUserDto {
 
   @IsEnum(UserRole)
   role: UserRole;
-
 }
