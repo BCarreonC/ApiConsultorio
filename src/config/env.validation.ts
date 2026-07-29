@@ -16,4 +16,14 @@ export const envValidationSchema = Joi.object({
   JWT_EXPIRES: Joi.string().required(),
 
   LANGGRAPH_URL: Joi.string().required(),
+
+  LOG_HTTP_REQUEST_BODY: Joi.boolean().default(false),
+
+  LOG_HTTP_RESPONSE_BODY: Joi.boolean().default(false),
+
+  LOG_HTTP_MAX_BODY_LENGTH: Joi.number()
+    .integer()
+    .min(500)
+    .max(50000)
+    .default(4000),
 });

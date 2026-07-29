@@ -96,3 +96,35 @@ Nest is an MIT-licensed open source project. It can grow thanks to the sponsors 
 ## License
 
 Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+
+## Logs HTTP para depuración
+
+La API incluye el middleware global `HttpLoggerMiddleware`. Cada petición recibe un
+identificador de correlación en la cabecera `X-Request-Id` y genera un log al iniciar
+y otro al terminar, con método, ruta, estado HTTP y duración.
+
+Variables opcionales:
+
+```env
+LOG_HTTP_REQUEST_BODY=false
+LOG_HTTP_RESPONSE_BODY=false
+LOG_HTTP_MAX_BODY_LENGTH=4000
+```
+
+Para depurar localmente cuerpos de entrada y salida:
+
+```env
+LOG_HTTP_REQUEST_BODY=true
+LOG_HTTP_RESPONSE_BODY=true
+```
+
+No se registran valores de campos como `password`, `token`, `authorization`,
+`cookie`, `secret` o `apiKey`; aparecen como `[REDACTED]`. Como los cuerpos pueden
+contener información médica, deben mantenerse desactivados fuera del entorno local.
+
+Ejemplo de salida:
+
+```text
+[Nest] LOG [HTTP] {"event":"http.request.started","requestId":"...","method":"POST","path":"/api/appointments"}
+[Nest] LOG [HTTP] {"event":"http.request.completed","requestId":"...","method":"POST","path":"/api/appointments","statusCode":201,"durationMs":31.42}
+```

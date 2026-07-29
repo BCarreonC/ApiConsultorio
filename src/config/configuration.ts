@@ -17,4 +17,13 @@ export default () => ({
   ai: {
     url: process.env.LANGGRAPH_URL,
   },
+
+  logging: {
+    httpRequestBody: process.env.LOG_HTTP_REQUEST_BODY === 'true',
+    httpResponseBody: process.env.LOG_HTTP_RESPONSE_BODY === 'true',
+    httpMaxBodyLength: parseInt(
+      process.env.LOG_HTTP_MAX_BODY_LENGTH || '4000',
+      10,
+    ),
+  },
 });
