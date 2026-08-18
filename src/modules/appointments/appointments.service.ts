@@ -5,17 +5,47 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { ConfigService } from '@nestjs/config';
+import { Model, Types } from 'mongoose';
 
-import { Appointment } from './schemas/appointment.schema';
+import { Appointment, AppointmentDocument } from './schemas/appointment.schema';
 import { Doctor, Schedule } from '../doctors/schemas/doctor.schema';
 import { Patient } from '../patients/schemas/patient.schema';
 
 import { CreateAppointmentDto } from './dto/create-appointment.dto';
 import { UpdateAppointmentDto } from './dto/update-appointment.dto';
 import { AppointmentAvailabilityDto } from './dto/appointment-availability.dto';
+import { ListAppointmentsDto } from './dto/list-appointments.dto';
+import { CancelAppointmentDto } from './dto/cancel-appointment.dto';
+import { RescheduleAppointmentDto } from './dto/reschedule-appointment.dto';
 
-import { AppointmentStatus } from './constants/appointment-status.constant';
+import {
+  AppointmentStatus,
+  PENDING_APPOINTMENT_STATUSES,
+} from './constants/appointment-status.constant';
+
+interface DoctorLookupRecord {
+  _id?: unknown;
+  isActive?: boolean;
+  schedule?: Schedule[];
+  specialty?: unknown;
+  office?: unknown;
+  userId?: unknown;
+}
+
+interface PopulatedDoctorUser {
+  fullName?: unknown;
+  isActive?: boolean;
+}
+
+interface SlotValidationInput {
+  doctorId: string;
+  patientId: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  excludeAppointmentId?: string;
+}
 
 @Injectable()
 export class AppointmentsService {
@@ -28,22 +58,416 @@ export class AppointmentsService {
 
     @InjectModel(Patient.name)
     private readonly patientModel: Model<Patient>,
+
+    private readonly configService: ConfigService,
   ) {}
 
   async create(dto: CreateAppointmentDto) {
-    const { startOfDay, endOfDay } = this.getDateRange(dto.date);
+    const { startOfDay } = await this.validateSlot({
+      doctorId: dto.doctorId,
+      patientId: dto.patientId,
+      date: dto.date,
+      startTime: dto.startTime,
+      endTime: dto.endTime,
+    });
+
+    const appointment = await this.appointmentModel.create({
+      ...dto,
+      date: startOfDay,
+      status: AppointmentStatus.SCHEDULED,
+    });
+
+    return this.findOne(appointment._id.toString());
+  }
+
+  async findAvailability(query: AppointmentAvailabilityDto) {
+    const durationMinutes = query.durationMinutes ?? 30;
+    const { startOfDay, endOfDay } = this.getDateRange(query.date);
+
+    const doctor = await this.doctorModel
+      .findById(query.doctorId)
+      .populate('userId', 'fullName email role isActive')
+      .lean()
+      .exec();
+
+    if (!doctor || !this.isActiveDoctor(doctor)) {
+      throw new NotFoundException('Médico no encontrado o inactivo');
+    }
+
+    const schedules = this.getSchedulesForDate(
+      doctor.schedule ?? [],
+      startOfDay,
+    );
+
+    if (schedules.length === 0) {
+      return {
+        doctor: this.formatDoctor(doctor),
+        date: query.date,
+        durationMinutes,
+        schedule: [],
+        occupiedSlots: [],
+        availableSlots: [],
+        message: 'El médico no tiene horario configurado para esa fecha',
+      };
+    }
+
+    const appointments = await this.appointmentModel
+      .find({
+        doctorId: query.doctorId,
+        date: {
+          $gte: startOfDay,
+          $lt: endOfDay,
+        },
+        isActive: true,
+        status: {
+          $in: PENDING_APPOINTMENT_STATUSES,
+        },
+      })
+      .select('startTime endTime status')
+      .sort({ startTime: 1 })
+      .lean()
+      .exec();
+
+    const availableSlots: Array<{
+      startTime: string;
+      endTime: string;
+    }> = [];
+
+    for (const schedule of schedules) {
+      const scheduleStart = this.timeToMinutes(schedule.startTime);
+      const scheduleEnd = this.timeToMinutes(schedule.endTime);
+
+      for (
+        let slotStart = scheduleStart;
+        slotStart + durationMinutes <= scheduleEnd;
+        slotStart += durationMinutes
+      ) {
+        const slotEnd = slotStart + durationMinutes;
+
+        const hasConflict = appointments.some((appointment) => {
+          const appointmentStart = this.timeToMinutes(appointment.startTime);
+          const appointmentEnd = this.timeToMinutes(appointment.endTime);
+
+          return appointmentStart < slotEnd && appointmentEnd > slotStart;
+        });
+
+        if (!hasConflict) {
+          availableSlots.push({
+            startTime: this.minutesToTime(slotStart),
+            endTime: this.minutesToTime(slotEnd),
+          });
+        }
+      }
+    }
+
+    return {
+      doctor: this.formatDoctor(doctor),
+      date: query.date,
+      durationMinutes,
+      schedule: schedules.map((schedule) => ({
+        startTime: schedule.startTime,
+        endTime: schedule.endTime,
+      })),
+      occupiedSlots: appointments.map((appointment) => ({
+        startTime: appointment.startTime,
+        endTime: appointment.endTime,
+        status: appointment.status,
+      })),
+      availableSlots,
+    };
+  }
+
+  findAll(query: ListAppointmentsDto) {
+    if (query.pending && query.status) {
+      throw new BadRequestException(
+        'No uses pending y status al mismo tiempo. Elige un solo filtro.',
+      );
+    }
+
+    const filter: Record<string, any> = {
+      isActive: true,
+    };
+    const conditions: Array<Record<string, any>> = [];
+
+    if (query.patientId) {
+      filter.patientId = query.patientId;
+    }
+
+    if (query.doctorId) {
+      filter.doctorId = query.doctorId;
+    }
+
+    if (query.status) {
+      filter.status = query.status;
+    } else if (query.pending || query.upcoming) {
+      filter.status = {
+        $in: PENDING_APPOINTMENT_STATUSES,
+      };
+    }
+
+    if (query.date) {
+      const { startOfDay, endOfDay } = this.getDateRange(query.date);
+      conditions.push({
+        date: {
+          $gte: startOfDay,
+          $lt: endOfDay,
+        },
+      });
+    }
+
+    if (query.upcoming) {
+      const { date: today, time: currentTime } =
+        this.getCurrentClinicDateTime();
+      const { startOfDay, endOfDay } = this.getDateRange(today);
+
+      conditions.push({
+        $or: [
+          {
+            date: {
+              $gte: endOfDay,
+            },
+          },
+          {
+            date: {
+              $gte: startOfDay,
+              $lt: endOfDay,
+            },
+            endTime: {
+              $gte: currentTime,
+            },
+          },
+        ],
+      });
+    }
+
+    if (conditions.length > 0) {
+      filter.$and = conditions;
+    }
+
+    return this.appointmentModel
+      .find(filter)
+      .populate({
+        path: 'doctorId',
+        populate: {
+          path: 'userId',
+          select: 'fullName email role isActive',
+        },
+      })
+      .populate('patientId')
+      .sort({
+        date: 1,
+        startTime: 1,
+      })
+      .limit(query.limit ?? 100)
+      .lean()
+      .exec();
+  }
+
+  async findOne(id: string) {
+    this.validateMongoId(id);
+
+    const appointment = await this.appointmentModel
+      .findById(id)
+      .populate({
+        path: 'doctorId',
+        populate: {
+          path: 'userId',
+          select: 'fullName email role isActive',
+        },
+      })
+      .populate('patientId')
+      .lean()
+      .exec();
+
+    if (!appointment) {
+      throw new NotFoundException('Cita no encontrada');
+    }
+
+    return appointment;
+  }
+
+  async update(id: string, dto: UpdateAppointmentDto) {
+    this.validateMongoId(id);
+
+    const appointment = await this.appointmentModel
+      .findByIdAndUpdate(id, dto, {
+        new: true,
+        runValidators: true,
+      })
+      .exec();
+
+    if (!appointment) {
+      throw new NotFoundException('Cita no encontrada');
+    }
+
+    return this.findOne(id);
+  }
+
+  async cancel(id: string, dto: CancelAppointmentDto) {
+    const appointment = await this.findAppointmentDocument(id);
+
+    if (appointment.status === AppointmentStatus.CANCELLED) {
+      return this.findOne(id);
+    }
+
+    this.assertStatus(
+      appointment,
+      [AppointmentStatus.SCHEDULED, AppointmentStatus.CONFIRMED],
+      'cancelar',
+    );
+
+    appointment.status = AppointmentStatus.CANCELLED;
+    appointment.cancelledAt = new Date();
+    appointment.cancellationReason =
+      dto.cancellationReason ?? 'Cancelada por solicitud del usuario';
+
+    await appointment.save();
+
+    return this.findOne(id);
+  }
+
+  async reschedule(id: string, dto: RescheduleAppointmentDto) {
+    const appointment = await this.findAppointmentDocument(id);
+
+    this.assertStatus(
+      appointment,
+      [AppointmentStatus.SCHEDULED, AppointmentStatus.CONFIRMED],
+      'reprogramar',
+    );
+
+    const startMinutes = this.timeToMinutes(dto.startTime);
+    const endMinutes = startMinutes + dto.durationMinutes;
+
+    if (endMinutes > 24 * 60 - 1) {
+      throw new BadRequestException(
+        'La cita reprogramada no puede terminar después de las 23:59',
+      );
+    }
+
+    const endTime = this.minutesToTime(endMinutes);
+
+    const { startOfDay } = await this.validateSlot({
+      doctorId: appointment.doctorId.toString(),
+      patientId: appointment.patientId.toString(),
+      date: dto.date,
+      startTime: dto.startTime,
+      endTime,
+      excludeAppointmentId: id,
+    });
+
+    const changedAt = new Date();
+
+    appointment.rescheduleHistory = [
+      ...(appointment.rescheduleHistory ?? []),
+      {
+        date: appointment.date,
+        startTime: appointment.startTime,
+        endTime: appointment.endTime,
+        statusBefore: appointment.status,
+        changedAt,
+      },
+    ];
+    appointment.date = startOfDay;
+    appointment.startTime = dto.startTime;
+    appointment.endTime = endTime;
+    appointment.status = AppointmentStatus.SCHEDULED;
+    appointment.rescheduledAt = changedAt;
+    appointment.confirmedAt = undefined;
+
+    await appointment.save();
+
+    return this.findOne(id);
+  }
+
+  async confirm(id: string) {
+    const appointment = await this.findAppointmentDocument(id);
+
+    if (appointment.status === AppointmentStatus.CONFIRMED) {
+      return this.findOne(id);
+    }
+
+    this.assertStatus(appointment, [AppointmentStatus.SCHEDULED], 'confirmar');
+
+    appointment.status = AppointmentStatus.CONFIRMED;
+    appointment.confirmedAt = new Date();
+
+    await appointment.save();
+
+    return this.findOne(id);
+  }
+
+  async complete(id: string) {
+    const appointment = await this.findAppointmentDocument(id);
+
+    if (appointment.status === AppointmentStatus.COMPLETED) {
+      return this.findOne(id);
+    }
+
+    this.assertStatus(
+      appointment,
+      [AppointmentStatus.SCHEDULED, AppointmentStatus.CONFIRMED],
+      'completar',
+    );
+
+    appointment.status = AppointmentStatus.COMPLETED;
+    appointment.completedAt = new Date();
+
+    await appointment.save();
+
+    return this.findOne(id);
+  }
+
+  async markNoShow(id: string) {
+    const appointment = await this.findAppointmentDocument(id);
+
+    if (appointment.status === AppointmentStatus.NO_SHOW) {
+      return this.findOne(id);
+    }
+
+    this.assertStatus(
+      appointment,
+      [AppointmentStatus.SCHEDULED, AppointmentStatus.CONFIRMED],
+      'marcar como no presentado',
+    );
+
+    appointment.status = AppointmentStatus.NO_SHOW;
+    appointment.noShowAt = new Date();
+
+    await appointment.save();
+
+    return this.findOne(id);
+  }
+
+  async remove(id: string) {
+    this.validateMongoId(id);
+
+    const appointment = await this.appointmentModel
+      .findByIdAndDelete(id)
+      .exec();
+
+    if (!appointment) {
+      throw new NotFoundException('Cita no encontrada');
+    }
+
+    return appointment;
+  }
+
+  private async validateSlot(input: SlotValidationInput): Promise<{
+    startOfDay: Date;
+    endOfDay: Date;
+  }> {
+    const { startOfDay, endOfDay } = this.getDateRange(input.date);
 
     const [doctor, patient] = await Promise.all([
       this.doctorModel
-        .findById(dto.doctorId)
+        .findById(input.doctorId)
         .populate('userId', 'fullName email role isActive')
         .lean()
         .exec(),
-
-      this.patientModel.findById(dto.patientId).lean().exec(),
+      this.patientModel.findById(input.patientId).lean().exec(),
     ]);
 
-    if (!doctor || !doctor.isActive) {
+    if (!doctor || !this.isActiveDoctor(doctor)) {
       throw new NotFoundException('Médico no encontrado o inactivo');
     }
 
@@ -51,8 +475,8 @@ export class AppointmentsService {
       throw new NotFoundException('Paciente no encontrado o inactivo');
     }
 
-    const startMinutes = this.timeToMinutes(dto.startTime);
-    const endMinutes = this.timeToMinutes(dto.endTime);
+    const startMinutes = this.timeToMinutes(input.startTime);
+    const endMinutes = this.timeToMinutes(input.endTime);
 
     if (endMinutes <= startMinutes) {
       throw new BadRequestException('endTime debe ser posterior a startTime');
@@ -82,36 +506,44 @@ export class AppointmentsService {
       );
     }
 
+    const conflictFilter: Record<string, any> = {
+      date: {
+        $gte: startOfDay,
+        $lt: endOfDay,
+      },
+      isActive: true,
+      status: {
+        $in: PENDING_APPOINTMENT_STATUSES,
+      },
+      startTime: {
+        $lt: input.endTime,
+      },
+      endTime: {
+        $gt: input.startTime,
+      },
+      $or: [
+        {
+          doctorId: input.doctorId,
+        },
+        {
+          patientId: input.patientId,
+        },
+      ],
+    };
+
+    if (input.excludeAppointmentId) {
+      conflictFilter._id = {
+        $ne: input.excludeAppointmentId,
+      };
+    }
+
     const conflict = await this.appointmentModel
-      .findOne({
-        date: {
-          $gte: startOfDay,
-          $lt: endOfDay,
-        },
-        isActive: true,
-        status: {
-          $nin: [AppointmentStatus.CANCELLED, AppointmentStatus.RESCHEDULED],
-        },
-        startTime: {
-          $lt: dto.endTime,
-        },
-        endTime: {
-          $gt: dto.startTime,
-        },
-        $or: [
-          {
-            doctorId: dto.doctorId,
-          },
-          {
-            patientId: dto.patientId,
-          },
-        ],
-      })
+      .findOne(conflictFilter)
       .lean()
       .exec();
 
     if (conflict) {
-      const doctorHasConflict = conflict.doctorId.toString() === dto.doctorId;
+      const doctorHasConflict = conflict.doctorId.toString() === input.doctorId;
 
       throw new ConflictException(
         doctorHasConflict
@@ -120,159 +552,18 @@ export class AppointmentsService {
       );
     }
 
-    const appointment = await this.appointmentModel.create({
-      ...dto,
-      date: startOfDay,
-      status: dto.status ?? AppointmentStatus.SCHEDULED,
-    });
-
-    await appointment.populate([
-      {
-        path: 'doctorId',
-        populate: {
-          path: 'userId',
-          select: 'fullName email role',
-        },
-      },
-      {
-        path: 'patientId',
-      },
-    ]);
-
-    return appointment;
-  }
-
-  async findAvailability(query: AppointmentAvailabilityDto) {
-    const durationMinutes = query.durationMinutes ?? 30;
-
-    const { startOfDay, endOfDay } = this.getDateRange(query.date);
-
-    const doctor = await this.doctorModel
-      .findById(query.doctorId)
-      .populate('userId', 'fullName email role isActive')
-      .lean()
-      .exec();
-
-    if (!doctor || !doctor.isActive) {
-      throw new NotFoundException('Médico no encontrado o inactivo');
-    }
-
-    const schedules = this.getSchedulesForDate(
-      doctor.schedule ?? [],
-      startOfDay,
-    );
-
-    if (schedules.length === 0) {
-      return {
-        doctor: this.formatDoctor(doctor),
-        date: query.date,
-        durationMinutes,
-        schedule: [],
-        availableSlots: [],
-        message: 'El médico no tiene horario configurado para esa fecha',
-      };
-    }
-
-    const appointments = await this.appointmentModel
-      .find({
-        doctorId: query.doctorId,
-        date: {
-          $gte: startOfDay,
-          $lt: endOfDay,
-        },
-        isActive: true,
-        status: {
-          $nin: [AppointmentStatus.CANCELLED, AppointmentStatus.RESCHEDULED],
-        },
-      })
-      .select('startTime endTime status')
-      .sort({
-        startTime: 1,
-      })
-      .lean()
-      .exec();
-
-    const availableSlots: Array<{
-      startTime: string;
-      endTime: string;
-    }> = [];
-
-    for (const schedule of schedules) {
-      const scheduleStart = this.timeToMinutes(schedule.startTime);
-      const scheduleEnd = this.timeToMinutes(schedule.endTime);
-
-      for (
-        let slotStart = scheduleStart;
-        slotStart + durationMinutes <= scheduleEnd;
-        slotStart += durationMinutes
-      ) {
-        const slotEnd = slotStart + durationMinutes;
-
-        const hasConflict = appointments.some((appointment) => {
-          const appointmentStart = this.timeToMinutes(appointment.startTime);
-
-          const appointmentEnd = this.timeToMinutes(appointment.endTime);
-
-          return appointmentStart < slotEnd && appointmentEnd > slotStart;
-        });
-
-        if (!hasConflict) {
-          availableSlots.push({
-            startTime: this.minutesToTime(slotStart),
-            endTime: this.minutesToTime(slotEnd),
-          });
-        }
-      }
-    }
-
     return {
-      doctor: this.formatDoctor(doctor),
-      date: query.date,
-      durationMinutes,
-      schedule: schedules.map((schedule) => ({
-        startTime: schedule.startTime,
-        endTime: schedule.endTime,
-      })),
-      occupiedSlots: appointments.map((appointment) => ({
-        startTime: appointment.startTime,
-        endTime: appointment.endTime,
-      })),
-      availableSlots,
+      startOfDay,
+      endOfDay,
     };
   }
 
-  findAll() {
-    return this.appointmentModel
-      .find()
-      .populate({
-        path: 'doctorId',
-        populate: {
-          path: 'userId',
-          select: 'fullName email role',
-        },
-      })
-      .populate('patientId')
-      .sort({
-        date: 1,
-        startTime: 1,
-      })
-      .lean()
-      .exec();
-  }
+  private async findAppointmentDocument(
+    id: string,
+  ): Promise<AppointmentDocument> {
+    this.validateMongoId(id);
 
-  async findOne(id: string) {
-    const appointment = await this.appointmentModel
-      .findById(id)
-      .populate({
-        path: 'doctorId',
-        populate: {
-          path: 'userId',
-          select: 'fullName email role',
-        },
-      })
-      .populate('patientId')
-      .lean()
-      .exec();
+    const appointment = await this.appointmentModel.findById(id).exec();
 
     if (!appointment) {
       throw new NotFoundException('Cita no encontrada');
@@ -281,31 +572,74 @@ export class AppointmentsService {
     return appointment;
   }
 
-  async update(id: string, dto: UpdateAppointmentDto) {
-    const appointment = await this.appointmentModel
-      .findByIdAndUpdate(id, dto, {
-        new: true,
-        runValidators: true,
-      })
-      .exec();
-
-    if (!appointment) {
-      throw new NotFoundException('Cita no encontrada');
+  private assertStatus(
+    appointment: AppointmentDocument,
+    allowedStatuses: AppointmentStatus[],
+    action: string,
+  ): void {
+    if (allowedStatuses.includes(appointment.status)) {
+      return;
     }
 
-    return appointment;
+    throw new ConflictException(
+      `No se puede ${action} una cita con estado ${appointment.status}`,
+    );
   }
 
-  async remove(id: string) {
-    const appointment = await this.appointmentModel
-      .findByIdAndDelete(id)
-      .exec();
+  private validateMongoId(id: string): void {
+    if (!Types.ObjectId.isValid(id)) {
+      throw new BadRequestException('El ID de la cita no es válido');
+    }
+  }
 
-    if (!appointment) {
-      throw new NotFoundException('Cita no encontrada');
+  private isActiveDoctor(doctor: unknown): boolean {
+    if (!this.isRecord(doctor) || doctor.isActive !== true) {
+      return false;
     }
 
-    return appointment;
+    const user = this.getPopulatedDoctorUser(doctor.userId);
+
+    return user?.isActive !== false;
+  }
+
+  private getPopulatedDoctorUser(value: unknown): PopulatedDoctorUser | null {
+    if (!this.isRecord(value)) {
+      return null;
+    }
+
+    return {
+      fullName: value.fullName,
+      isActive:
+        typeof value.isActive === 'boolean' ? value.isActive : undefined,
+    };
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null;
+  }
+
+  private getCurrentClinicDateTime(): { date: string; time: string } {
+    const timeZone =
+      this.configService.get<string>('app.timezone') ?? 'America/Mexico_City';
+
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(new Date());
+
+    const values = Object.fromEntries(
+      parts.map((part) => [part.type, part.value]),
+    );
+
+    return {
+      date: `${values.year}-${values.month}-${values.day}`,
+      time: `${values.hour}:${values.minute}`,
+    };
   }
 
   private getDateRange(date: string): {
@@ -326,7 +660,6 @@ export class AppointmentsService {
     }
 
     const endOfDay = new Date(startOfDay);
-
     endOfDay.setUTCDate(endOfDay.getUTCDate() + 1);
 
     return {
@@ -365,7 +698,6 @@ export class AppointmentsService {
 
   private minutesToTime(totalMinutes: number): string {
     const hours = Math.floor(totalMinutes / 60);
-
     const minutes = totalMinutes % 60;
 
     return [
@@ -382,15 +714,18 @@ export class AppointmentsService {
       .toLowerCase();
   }
 
-  private formatDoctor(doctor: Record<string, any>) {
-    const user =
-      doctor.userId && typeof doctor.userId === 'object' ? doctor.userId : null;
+  private formatDoctor(doctor: DoctorLookupRecord) {
+    const user = this.getPopulatedDoctorUser(doctor.userId);
 
     return {
       id: doctor._id,
-      name: user?.fullName ?? 'Médico sin nombre',
-      specialty: doctor.specialty,
-      office: doctor.office,
+      name:
+        typeof user?.fullName === 'string'
+          ? user.fullName
+          : 'Médico sin nombre',
+      specialty:
+        typeof doctor.specialty === 'string' ? doctor.specialty : undefined,
+      office: typeof doctor.office === 'string' ? doctor.office : undefined,
     };
   }
 }
