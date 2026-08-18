@@ -1,5 +1,17 @@
-import { PartialType } from '@nestjs/mapped-types';
+import { IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { ApiPropertyOptional } from '@nestjs/swagger';
 
-import { CreateAppointmentDto } from './create-appointment.dto';
+export class UpdateAppointmentDto {
+  @ApiPropertyOptional({ example: 'Revisión general' })
+  @IsOptional()
+  @IsString()
+  @MinLength(2)
+  @MaxLength(500)
+  reason?: string;
 
-export class UpdateAppointmentDto extends PartialType(CreateAppointmentDto) {}
+  @ApiPropertyOptional({ example: 'El paciente llevará sus estudios.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  notes?: string;
+}

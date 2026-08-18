@@ -1,15 +1,13 @@
 import {
   IsDateString,
-  IsEnum,
   IsMongoId,
   IsOptional,
   IsString,
   Matches,
+  MaxLength,
   MinLength,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-
-import { AppointmentStatus } from '../constants/appointment-status.constant';
 
 export class CreateAppointmentDto {
   @ApiProperty({
@@ -36,41 +34,27 @@ export class CreateAppointmentDto {
   @IsDateString()
   date: string;
 
-  @ApiProperty({
-    example: '10:00',
-  })
+  @ApiProperty({ example: '10:00' })
   @Matches(/^([01]\d|2[0-3]):[0-5]\d$/, {
     message: 'startTime debe usar el formato HH:mm',
   })
   startTime: string;
 
-  @ApiProperty({
-    example: '10:30',
-  })
+  @ApiProperty({ example: '10:30' })
   @Matches(/^([01]\d|2[0-3]):[0-5]\d$/, {
     message: 'endTime debe usar el formato HH:mm',
   })
   endTime: string;
 
-  @ApiProperty({
-    example: 'Revisión general',
-  })
+  @ApiProperty({ example: 'Revisión general' })
   @IsString()
   @MinLength(2)
+  @MaxLength(500)
   reason: string;
 
-  @ApiPropertyOptional({
-    example: 'Primera consulta',
-  })
+  @ApiPropertyOptional({ example: 'Primera consulta' })
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   notes?: string;
-
-  @ApiPropertyOptional({
-    enum: AppointmentStatus,
-    default: AppointmentStatus.SCHEDULED,
-  })
-  @IsOptional()
-  @IsEnum(AppointmentStatus)
-  status?: AppointmentStatus;
 }
