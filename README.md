@@ -128,3 +128,7 @@ Ejemplo de salida:
 [Nest] LOG [HTTP] {"event":"http.request.started","requestId":"...","method":"POST","path":"/api/appointments"}
 [Nest] LOG [HTTP] {"event":"http.request.completed","requestId":"...","method":"POST","path":"/api/appointments","statusCode":201,"durationMs":31.42}
 ```
+
+## Gestión de citas ampliada
+
+La documentación de consultas, cancelación, reprogramación y estados se encuentra en [APPOINTMENTS_IMPLEMENTATION.md](APPOINTMENTS_IMPLEMENTATION.md). Las pruebas de integración están en `test/manual`.

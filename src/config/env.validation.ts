@@ -9,6 +9,8 @@ export const envValidationSchema = Joi.object({
 
   APP_NAME: Joi.string().required(),
 
+  APP_TIMEZONE: Joi.string().default('America/Mexico_City'),
+
   MONGO_URI: Joi.string().required(),
 
   JWT_SECRET: Joi.string().required(),
