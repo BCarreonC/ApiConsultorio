@@ -5,6 +5,28 @@ import { AppointmentStatus } from '../constants/appointment-status.constant';
 
 export type AppointmentDocument = HydratedDocument<Appointment>;
 
+@Schema({ _id: false })
+export class AppointmentScheduleHistory {
+  @Prop({ required: true })
+  date: Date;
+
+  @Prop({ required: true })
+  startTime: string;
+
+  @Prop({ required: true })
+  endTime: string;
+
+  @Prop({ enum: AppointmentStatus, required: true })
+  statusBefore: AppointmentStatus;
+
+  @Prop({ required: true })
+  changedAt: Date;
+}
+
+const AppointmentScheduleHistorySchema = SchemaFactory.createForClass(
+  AppointmentScheduleHistory,
+);
+
 @Schema({
   timestamps: true,
 })
@@ -23,19 +45,13 @@ export class Appointment {
   })
   patientId: Types.ObjectId;
 
-  @Prop({
-    required: true,
-  })
+  @Prop({ required: true })
   date: Date;
 
-  @Prop({
-    required: true,
-  })
+  @Prop({ required: true })
   startTime: string;
 
-  @Prop({
-    required: true,
-  })
+  @Prop({ required: true })
   endTime: string;
 
   @Prop({
@@ -44,17 +60,37 @@ export class Appointment {
   })
   status: AppointmentStatus;
 
-  @Prop({
-    required: true,
-  })
+  @Prop({ required: true })
   reason: string;
 
   @Prop()
-  notes: string;
+  notes?: string;
+
+  @Prop()
+  confirmedAt?: Date;
+
+  @Prop()
+  cancelledAt?: Date;
+
+  @Prop()
+  cancellationReason?: string;
+
+  @Prop()
+  completedAt?: Date;
+
+  @Prop()
+  noShowAt?: Date;
+
+  @Prop()
+  rescheduledAt?: Date;
 
   @Prop({
-    default: true,
+    type: [AppointmentScheduleHistorySchema],
+    default: [],
   })
+  rescheduleHistory: AppointmentScheduleHistory[];
+
+  @Prop({ default: true })
   isActive: boolean;
 }
 
@@ -68,6 +104,12 @@ AppointmentSchema.index({
 
 AppointmentSchema.index({
   patientId: 1,
+  date: 1,
+  startTime: 1,
+});
+
+AppointmentSchema.index({
+  status: 1,
   date: 1,
   startTime: 1,
 });

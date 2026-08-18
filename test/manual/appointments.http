@@ -1,0 +1,60 @@
+@baseUrl = http://localhost:3000/api
+@doctorId = REEMPLAZA_DOCTOR_ID
+@patientId = REEMPLAZA_PATIENT_ID
+@appointmentId = REEMPLAZA_APPOINTMENT_ID
+@date = 2026-07-30
+@newDate = 2026-08-04
+
+### Consultar citas de un paciente
+GET {{baseUrl}}/appointments?patientId={{patientId}}
+
+### Consultar citas de un médico
+GET {{baseUrl}}/appointments?doctorId={{doctorId}}
+
+### Consultar citas por fecha
+GET {{baseUrl}}/appointments?date={{date}}
+
+### Consultar citas por estado
+GET {{baseUrl}}/appointments?status=scheduled
+
+### Consultar citas pendientes
+GET {{baseUrl}}/appointments?pending=true
+
+### Consultar próximas citas
+GET {{baseUrl}}/appointments?upcoming=true
+
+### Cancelar cita
+PATCH {{baseUrl}}/appointments/{{appointmentId}}/cancel
+Content-Type: application/json
+
+{
+  "cancellationReason": "El paciente no podrá asistir"
+}
+
+### Reprogramar cita
+PATCH {{baseUrl}}/appointments/{{appointmentId}}/reschedule
+Content-Type: application/json
+
+{
+  "date": "{{newDate}}",
+  "startTime": "12:00",
+  "durationMinutes": 30
+}
+
+### Confirmar cita
+PATCH {{baseUrl}}/appointments/{{appointmentId}}/confirm
+Content-Type: application/json
+
+{}
+
+### Marcar cita como atendida
+PATCH {{baseUrl}}/appointments/{{appointmentId}}/complete
+Content-Type: application/json
+
+{}
+
+### Marcar que no se presentó
+PATCH {{baseUrl}}/appointments/{{appointmentId}}/no-show
+Content-Type: application/json
+
+{}
