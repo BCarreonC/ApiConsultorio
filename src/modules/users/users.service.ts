@@ -11,6 +11,7 @@ import { User } from './schemas/user.schema';
 import { CreateUserDto } from './dto/create-user.dto';
 
 import { UpdateUserDto } from './dto/update-user.dto';
+import { normalizeText } from 'src/common/utils/text-normalizer.util';
 
 @Injectable()
 export class UsersService {
@@ -20,9 +21,13 @@ export class UsersService {
   ) {}
 
   async create(dto: CreateUserDto) {
-    dto.password = await bcrypt.hash(dto.password, 10);
+    const password = await bcrypt.hash(dto.password, 10);
 
-    return this.userModel.create(dto);
+    return this.userModel.create({
+      ...dto,
+      password,
+      normalizedFullName: normalizeText(dto.fullName),
+    });
   }
 
   async findAll() {
@@ -44,9 +49,30 @@ export class UsersService {
   }
 
   async update(id: string, dto: UpdateUserDto) {
-    return this.userModel.findByIdAndUpdate(id, dto, {
-      new: true,
-    });
+    const updateData: Record<string, unknown> = {
+      ...dto,
+    };
+
+    if (dto.fullName) {
+      updateData.normalizedFullName = normalizeText(dto.fullName);
+    }
+
+    if (dto.password) {
+      updateData.password = await bcrypt.hash(dto.password, 10);
+    }
+
+    const user = await this.userModel
+      .findByIdAndUpdate(id, updateData, {
+        new: true,
+        runValidators: true,
+      })
+      .exec();
+
+    if (!user) {
+      throw new NotFoundException('Usuario no encontrado');
+    }
+
+    return user;
   }
 
   async remove(id: string) {

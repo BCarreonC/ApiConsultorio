@@ -42,6 +42,9 @@ $ npm run start:dev
 
 # production mode
 $ npm run start:prod
+
+# normalize database
+$ npm run backfill:names
 ```
 
 ## Run tests

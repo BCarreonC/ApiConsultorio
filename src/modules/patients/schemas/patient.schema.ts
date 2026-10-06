@@ -30,6 +30,9 @@ export class Patient {
   @Prop({ required: true })
   lastName: string;
 
+  @Prop({ required: true, index: true })
+  normalizedName: string;
+
   @Prop({ required: true })
   birthDate: Date;
 

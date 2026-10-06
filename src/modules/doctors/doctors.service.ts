@@ -8,6 +8,10 @@ import { User } from '../users/schemas/user.schema';
 import { CreateDoctorDto } from './dto/create-doctor.dto';
 import { UpdateDoctorDto } from './dto/update-doctor.dto';
 
+import { normalizeDoctorName } from '../../common/utils/person-name-normalizer.util';
+
+import { UserRole } from '../users/constants/roles.constant';
+
 @Injectable()
 export class DoctorsService {
   constructor(
@@ -33,25 +37,50 @@ export class DoctorsService {
   }
 
   async searchByName(name: string) {
-    const escapedName = this.escapeRegExp(name.trim());
+    const normalizedName = normalizeDoctorName(name);
+
+    console.log('[DOCTOR SEARCH] original:', name);
+
+    if (!normalizedName) {
+      console.log('[DOCTOR SEARCH] no name');
+      return [];
+    }
+
+    const tokens = normalizedName
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((token) => this.escapeRegExp(token));
+
+    console.log(
+      '[DOCTOR SEARCH] normalized:',
+      normalizedName,
+      'tokens:',
+      tokens,
+    );
+
+    const conditions = tokens.map((token) => ({
+      normalizedFullName: {
+        $regex: token,
+      },
+    }));
 
     const users = await this.userModel
       .find({
-        fullName: {
-          $regex: escapedName,
-          $options: 'i',
-        },
+        role: UserRole.DOCTOR,
         isActive: true,
+        $and: conditions,
       })
       .select('_id')
       .lean()
       .exec();
 
-    if (users.length === 0) {
+    if (!users.length) {
       return [];
     }
 
     const userIds = users.map((user) => user._id);
+    console.log('[DOCTOR SEARCH] users:', users);
+    console.log('[DOCTOR SEARCH] userIds:', userIds);
 
     return this.doctorModel
       .find({
