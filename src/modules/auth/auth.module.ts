@@ -14,7 +14,7 @@ import { AuthService } from './auth.service';
 
 import { JwtStrategy } from './jwt.strategy';
 
-import { User, UserSchema } from './schemas/user.schema';
+import { User, UserSchema } from '../users/schemas/user.schema';
 
 @Module({
   imports: [

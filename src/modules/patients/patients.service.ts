@@ -6,6 +6,8 @@ import { Patient } from './schemas/patient.schema';
 import { CreatePatientDto } from './dto/create-patient.dto';
 import { UpdatePatientDto } from './dto/update-patient.dto';
 
+import { normalizeText } from '../../common/utils/text-normalizer.util';
+
 @Injectable()
 export class PatientsService {
   constructor(
@@ -14,7 +16,12 @@ export class PatientsService {
   ) {}
 
   create(dto: CreatePatientDto) {
-    return this.patientModel.create(dto);
+    const normalizedName = normalizeText(`${dto.firstName} ${dto.lastName}`);
+
+    return this.patientModel.create({
+      ...dto,
+      normalizedName,
+    });
   }
 
   findAll() {
@@ -33,7 +40,7 @@ export class PatientsService {
    * - Pérez debe aparecer en firstName o lastName.
    */
   async searchByName(name: string) {
-    const normalizedName = name.trim();
+    const normalizedName = normalizeText(name);
 
     const tokens = normalizedName
       .split(/\s+/)
@@ -45,20 +52,9 @@ export class PatientsService {
     }
 
     const tokenFilters = tokens.map((token) => ({
-      $or: [
-        {
-          firstName: {
-            $regex: token,
-            $options: 'i',
-          },
-        },
-        {
-          lastName: {
-            $regex: token,
-            $options: 'i',
-          },
-        },
-      ],
+      normalizedName: {
+        $regex: token,
+      },
     }));
 
     return this.patientModel
@@ -84,17 +80,32 @@ export class PatientsService {
   }
 
   async update(id: string, dto: UpdatePatientDto) {
-    const patient = await this.patientModel
-      .findByIdAndUpdate(id, dto, {
-        new: true,
-        runValidators: true,
-      })
-      .lean()
-      .exec();
+    const currentPatient = await this.patientModel.findById(id).lean().exec();
 
-    if (!patient) {
+    if (!currentPatient) {
       throw new NotFoundException('Paciente no encontrado');
     }
+
+    const firstName = dto.firstName ?? currentPatient.firstName;
+
+    const lastName = dto.lastName ?? currentPatient.lastName;
+
+    const normalizedName = normalizeText(`${firstName} ${lastName}`);
+
+    const patient = await this.patientModel
+      .findByIdAndUpdate(
+        id,
+        {
+          ...dto,
+          normalizedName,
+        },
+        {
+          new: true,
+          runValidators: true,
+        },
+      )
+      .lean()
+      .exec();
 
     return patient;
   }

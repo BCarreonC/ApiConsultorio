@@ -12,11 +12,12 @@ import { Model } from 'mongoose';
 
 import * as bcrypt from 'bcrypt';
 
-import { User } from './schemas/user.schema';
+import { User } from '../users/schemas/user.schema';
 
 import { RegisterDto } from './dto/register.dto';
 
 import { LoginDto } from './dto/login.dto';
+import { normalizeText } from 'src/common/utils/text-normalizer.util';
 
 @Injectable()
 export class AuthService {
@@ -39,8 +40,14 @@ export class AuthService {
     const password = await bcrypt.hash(registerDto.password, 10);
 
     const user = await this.userModel.create({
-      ...registerDto,
+      fullName: registerDto.fullName,
+      normalizedFullName: normalizeText(registerDto.fullName),
+      email: registerDto.email,
       password,
+
+      ...(registerDto.role && {
+        role: registerDto.role,
+      }),
     });
 
     return {
