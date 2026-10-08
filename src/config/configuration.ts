@@ -3,6 +3,7 @@ export default () => ({
     name: process.env.APP_NAME,
     port: parseInt(process.env.PORT || '3000', 10),
     env: process.env.NODE_ENV,
+    timezone: process.env.APP_TIMEZONE || 'America/Mexico_City',
   },
 
   database: {

@@ -6,6 +6,7 @@ export type UserDocument = HydratedDocument<User>;
 
 @Schema({
   timestamps: true,
+  collection: 'users',
 })
 export class User {
   @Prop({
@@ -16,8 +17,16 @@ export class User {
 
   @Prop({
     required: true,
+    index: true,
+    trim: true,
+  })
+  normalizedFullName: string;
+
+  @Prop({
+    required: true,
     unique: true,
     lowercase: true,
+    trim: true,
   })
   email: string;
 
@@ -37,13 +46,6 @@ export class User {
     default: true,
   })
   isActive: boolean;
-
-  @Prop({
-  type: mongoose.Schema.Types.ObjectId,
-    ref: User.name,
-    required: true,
-  })
-  userId: mongoose.Types.ObjectId;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);
