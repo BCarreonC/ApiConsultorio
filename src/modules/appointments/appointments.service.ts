@@ -456,14 +456,30 @@ export class AppointmentsService {
     startOfDay: Date;
     endOfDay: Date;
   }> {
+    // 1. Validar la fecha
     const { startOfDay, endOfDay } = this.getDateRange(input.date);
 
+    // 2. Validar el formato de las horas
+    const startMinutes = this.timeToMinutes(input.startTime);
+
+    const endMinutes = this.timeToMinutes(input.endTime);
+
+    // 3. Validar el orden del horario
+    if (endMinutes <= startMinutes) {
+      throw new BadRequestException('endTime debe ser posterior a startTime');
+    }
+
+    // 4. Rechazar fechas y horas pasadas
+    this.assertAppointmentIsInFuture(input.date, input.startTime);
+
+    // 5. Consultar médico y paciente
     const [doctor, patient] = await Promise.all([
       this.doctorModel
         .findById(input.doctorId)
         .populate('userId', 'fullName email role isActive')
         .lean()
         .exec(),
+
       this.patientModel.findById(input.patientId).lean().exec(),
     ]);
 
@@ -474,9 +490,6 @@ export class AppointmentsService {
     if (!patient || !patient.isActive) {
       throw new NotFoundException('Paciente no encontrado o inactivo');
     }
-
-    const startMinutes = this.timeToMinutes(input.startTime);
-    const endMinutes = this.timeToMinutes(input.endTime);
 
     if (endMinutes <= startMinutes) {
       throw new BadRequestException('endTime debe ser posterior a startTime');
@@ -640,6 +653,22 @@ export class AppointmentsService {
       date: `${values.year}-${values.month}-${values.day}`,
       time: `${values.hour}:${values.minute}`,
     };
+  }
+
+  private assertAppointmentIsInFuture(date: string, startTime: string): void {
+    const { date: today, time: currentTime } = this.getCurrentClinicDateTime();
+
+    if (date < today) {
+      throw new BadRequestException(
+        'No es posible agendar o reprogramar una cita en una fecha pasada',
+      );
+    }
+
+    if (date === today && startTime <= currentTime) {
+      throw new BadRequestException(
+        'No es posible agendar o reprogramar una cita en una hora que ya pasó',
+      );
+    }
   }
 
   private getDateRange(date: string): {
