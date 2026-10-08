@@ -84,6 +84,8 @@ export class AppointmentsService {
     const durationMinutes = query.durationMinutes ?? 30;
     const { startOfDay, endOfDay } = this.getDateRange(query.date);
 
+    const { date: today, time: currentTime } = this.getCurrentClinicDateTime();
+
     const doctor = await this.doctorModel
       .findById(query.doctorId)
       .populate('userId', 'fullName email role isActive')
@@ -143,6 +145,18 @@ export class AppointmentsService {
         slotStart += durationMinutes
       ) {
         const slotEnd = slotStart + durationMinutes;
+
+        const slotStartTime = this.minutesToTime(slotStart);
+
+        // No ofrecer horarios de fechas pasadas
+        if (query.date < today) {
+          continue;
+        }
+
+        // No ofrecer horarios de hoy que ya pasaron
+        if (query.date === today && slotStartTime <= currentTime) {
+          continue;
+        }
 
         const hasConflict = appointments.some((appointment) => {
           const appointmentStart = this.timeToMinutes(appointment.startTime);
