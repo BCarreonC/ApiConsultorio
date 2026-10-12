@@ -9,13 +9,13 @@ export type PatientDocument = HydratedDocument<Patient>;
 @Schema({ _id: false })
 class EmergencyContact {
   @Prop({ required: true })
-  name: string;
+  name!: string;
 
   @Prop({ required: true })
-  relationship: string;
+  relationship!: string;
 
   @Prop({ required: true })
-  phone: string;
+  phone!: string;
 }
 
 const EmergencyContactSchema = SchemaFactory.createForClass(EmergencyContact);
@@ -25,62 +25,62 @@ const EmergencyContactSchema = SchemaFactory.createForClass(EmergencyContact);
 })
 export class Patient {
   @Prop({ required: true })
-  firstName: string;
+  firstName!: string;
 
   @Prop({ required: true })
-  lastName: string;
+  lastName!: string;
 
   @Prop({ required: true, index: true })
-  normalizedName: string;
+  normalizedName!: string;
 
   @Prop({
     type: Number,
     default: 0,
     select: false,
   })
-  agendaRevision: number;
+  agendaRevision!: number;
 
   @Prop({ required: true })
-  birthDate: Date;
+  birthDate!: Date;
 
   @Prop({
     required: true,
     enum: Gender,
   })
-  gender: Gender;
+  gender!: Gender;
 
   @Prop({ required: true })
-  phone: string;
+  phone!: string;
 
   @Prop({
     required: true,
     lowercase: true,
   })
-  email: string;
+  email!: string;
 
   @Prop()
-  address: string;
+  address!: string;
 
   @Prop({
     enum: BloodType,
   })
-  bloodType: BloodType;
+  bloodType!: BloodType;
 
   @Prop({
     type: [String],
     default: [],
   })
-  allergies: string[];
+  allergies!: string[];
 
   @Prop({
     type: EmergencyContactSchema,
   })
-  emergencyContact: EmergencyContact;
+  emergencyContact!: EmergencyContact;
 
   @Prop({
     default: true,
   })
-  isActive: boolean;
+  isActive!: boolean;
 }
 
 export const PatientSchema = SchemaFactory.createForClass(Patient);

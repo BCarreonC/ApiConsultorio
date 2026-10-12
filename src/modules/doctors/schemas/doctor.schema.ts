@@ -8,13 +8,13 @@ export type DoctorDocument = HydratedDocument<Doctor>;
 })
 export class Schedule {
   @Prop({ required: true })
-  day: string;
+  day!: string;
 
   @Prop({ required: true })
-  startTime: string;
+  startTime!: string;
 
   @Prop({ required: true })
-  endTime: string;
+  endTime!: string;
 }
 
 const ScheduleSchema = SchemaFactory.createForClass(Schedule);
@@ -29,43 +29,43 @@ export class Doctor {
     required: true,
     unique: true,
   })
-  userId: Types.ObjectId;
+  userId!: Types.ObjectId;
 
   @Prop({
     required: true,
     trim: true,
   })
-  specialty: string;
+  specialty!: string;
 
   @Prop({
     required: true,
     unique: true,
     trim: true,
   })
-  professionalLicense: string;
+  professionalLicense!: string;
 
   @Prop({
     required: true,
   })
-  office: string;
+  office!: string;
 
   @Prop({
     type: Number,
     default: 0,
     select: false,
   })
-  agendaRevision: number;
+  agendaRevision!: number;
 
   @Prop({
     type: [ScheduleSchema],
     default: [],
   })
-  schedule: Schedule[];
+  schedule!: Schedule[];
 
   @Prop({
     default: true,
   })
-  isActive: boolean;
+  isActive!: boolean;
 }
 
 export const DoctorSchema = SchemaFactory.createForClass(Doctor);
