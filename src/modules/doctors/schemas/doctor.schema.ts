@@ -7,7 +7,6 @@ export type DoctorDocument = HydratedDocument<Doctor>;
   _id: false,
 })
 export class Schedule {
-
   @Prop({ required: true })
   day: string;
 
@@ -16,7 +15,6 @@ export class Schedule {
 
   @Prop({ required: true })
   endTime: string;
-
 }
 
 const ScheduleSchema = SchemaFactory.createForClass(Schedule);
@@ -25,7 +23,6 @@ const ScheduleSchema = SchemaFactory.createForClass(Schedule);
   timestamps: true,
 })
 export class Doctor {
-
   @Prop({
     type: Types.ObjectId,
     ref: 'User',
@@ -53,6 +50,13 @@ export class Doctor {
   office: string;
 
   @Prop({
+    type: Number,
+    default: 0,
+    select: false,
+  })
+  agendaRevision: number;
+
+  @Prop({
     type: [ScheduleSchema],
     default: [],
   })
@@ -62,7 +66,6 @@ export class Doctor {
     default: true,
   })
   isActive: boolean;
-
 }
 
 export const DoctorSchema = SchemaFactory.createForClass(Doctor);

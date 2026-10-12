@@ -4,13 +4,14 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
+import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { ConfigService } from '@nestjs/config';
-import { Model, Types } from 'mongoose';
+import { ClientSession, Connection, Model, Types } from 'mongoose';
 
 import { Appointment, AppointmentDocument } from './schemas/appointment.schema';
 import { Doctor, Schedule } from '../doctors/schemas/doctor.schema';
 import { Patient } from '../patients/schemas/patient.schema';
+import { UserRole } from '../users/constants/roles.constant';
 
 import { CreateAppointmentDto } from './dto/create-appointment.dto';
 import { UpdateAppointmentDto } from './dto/update-appointment.dto';
@@ -33,11 +34,6 @@ interface DoctorLookupRecord {
   userId?: unknown;
 }
 
-interface PopulatedDoctorUser {
-  fullName?: unknown;
-  isActive?: boolean;
-}
-
 interface SlotValidationInput {
   doctorId: string;
   patientId: string;
@@ -45,6 +41,12 @@ interface SlotValidationInput {
   startTime: string;
   endTime: string;
   excludeAppointmentId?: string;
+}
+
+interface PopulatedDoctorUser {
+  fullName?: unknown;
+  isActive?: boolean;
+  role?: unknown;
 }
 
 @Injectable()
@@ -60,32 +62,68 @@ export class AppointmentsService {
     private readonly patientModel: Model<Patient>,
 
     private readonly configService: ConfigService,
+
+    @InjectConnection()
+    private readonly connection: Connection,
   ) {}
 
   async create(dto: CreateAppointmentDto) {
-    const { startOfDay } = await this.validateSlot({
-      doctorId: dto.doctorId,
-      patientId: dto.patientId,
-      date: dto.date,
-      startTime: dto.startTime,
-      endTime: dto.endTime,
+    const appointmentId = await this.withAgendaTransaction(async (session) => {
+      // 1. Coordinar las operaciones del médico
+      // y del paciente antes de consultar horarios.
+      await this.lockAgendaResources(dto.doctorId, dto.patientId, session);
+
+      // 2. Ejecutar las reglas de negocio
+      // dentro de la misma transacción.
+      const { startOfDay } = await this.validateSlot(
+        {
+          doctorId: dto.doctorId,
+          patientId: dto.patientId,
+          date: dto.date,
+          startTime: dto.startTime,
+          endTime: dto.endTime,
+        },
+        session,
+      );
+
+      // 3. Construir la nueva cita.
+      const appointment = new this.appointmentModel({
+        ...dto,
+        date: startOfDay,
+        status: AppointmentStatus.SCHEDULED,
+      });
+
+      // 4. Guardar sin abandonar la transacción.
+      await appointment.save({
+        session,
+      });
+
+      return appointment._id.toString();
     });
 
-    const appointment = await this.appointmentModel.create({
-      ...dto,
-      date: startOfDay,
-      status: AppointmentStatus.SCHEDULED,
-    });
-
-    return this.findOne(appointment._id.toString());
+    // 5. Consultar los datos completos cuando
+    // la transacción ya fue confirmada.
+    return this.findOne(appointmentId);
   }
 
   async findAvailability(query: AppointmentAvailabilityDto) {
     const durationMinutes = query.durationMinutes ?? 30;
+
+    if (
+      !Number.isInteger(durationMinutes) ||
+      durationMinutes < 15 ||
+      durationMinutes > 240
+    ) {
+      throw new BadRequestException(
+        'La duración debe estar entre 15 y 240 minutos',
+      );
+    }
+
     const { startOfDay, endOfDay } = this.getDateRange(query.date);
 
     const { date: today, time: currentTime } = this.getCurrentClinicDateTime();
 
+    // Esta consulta es informativa: no necesita una transacción.
     const doctor = await this.doctorModel
       .findById(query.doctorId)
       .populate('userId', 'fullName email role isActive')
@@ -137,6 +175,7 @@ export class AppointmentsService {
 
     for (const schedule of schedules) {
       const scheduleStart = this.timeToMinutes(schedule.startTime);
+
       const scheduleEnd = this.timeToMinutes(schedule.endTime);
 
       for (
@@ -148,18 +187,19 @@ export class AppointmentsService {
 
         const slotStartTime = this.minutesToTime(slotStart);
 
-        // No ofrecer horarios de fechas pasadas
+        // No ofrecer fechas pasadas.
         if (query.date < today) {
           continue;
         }
 
-        // No ofrecer horarios de hoy que ya pasaron
+        // No ofrecer horas que ya pasaron.
         if (query.date === today && slotStartTime <= currentTime) {
           continue;
         }
 
         const hasConflict = appointments.some((appointment) => {
           const appointmentStart = this.timeToMinutes(appointment.startTime);
+
           const appointmentEnd = this.timeToMinutes(appointment.endTime);
 
           return appointmentStart < slotEnd && appointmentEnd > slotStart;
@@ -190,7 +230,6 @@ export class AppointmentsService {
       availableSlots,
     };
   }
-
   findAll(query: ListAppointmentsDto) {
     if (query.pending && query.status) {
       throw new BadRequestException(
@@ -301,18 +340,17 @@ export class AppointmentsService {
   }
 
   async update(id: string, dto: UpdateAppointmentDto) {
-    this.validateMongoId(id);
+    const appointment = await this.findAppointmentDocument(id);
 
-    const appointment = await this.appointmentModel
-      .findByIdAndUpdate(id, dto, {
-        new: true,
-        runValidators: true,
-      })
-      .exec();
-
-    if (!appointment) {
-      throw new NotFoundException('Cita no encontrada');
+    if (dto.reason !== undefined) {
+      appointment.reason = dto.reason;
     }
+
+    if (dto.notes !== undefined) {
+      appointment.notes = dto.notes;
+    }
+
+    await this.saveAppointment(appointment);
 
     return this.findOne(id);
   }
@@ -335,60 +373,96 @@ export class AppointmentsService {
     appointment.cancellationReason =
       dto.cancellationReason ?? 'Cancelada por solicitud del usuario';
 
-    await appointment.save();
+    await this.saveAppointment(appointment);
 
     return this.findOne(id);
   }
 
   async reschedule(id: string, dto: RescheduleAppointmentDto) {
-    const appointment = await this.findAppointmentDocument(id);
+    // Consultar los recursos asociados a la cita.
+    // Solo se usan para saber qué documentos coordinar.
+    const source = await this.findAppointmentDocument(id);
 
-    this.assertStatus(
-      appointment,
-      [AppointmentStatus.SCHEDULED, AppointmentStatus.CONFIRMED],
-      'reprogramar',
-    );
+    const doctorId = source.doctorId.toString();
+    const patientId = source.patientId.toString();
 
-    const startMinutes = this.timeToMinutes(dto.startTime);
-    const endMinutes = startMinutes + dto.durationMinutes;
+    await this.withAgendaTransaction(async (session) => {
+      // 1. Coordinar médico y paciente.
+      await this.lockAgendaResources(doctorId, patientId, session);
 
-    if (endMinutes > 24 * 60 - 1) {
-      throw new BadRequestException(
-        'La cita reprogramada no puede terminar después de las 23:59',
+      // 2. Volver a leer la cita dentro de
+      // la transacción para obtener su estado actual.
+      const appointment = await this.findAppointmentDocument(id, session);
+
+      // Los recursos asociados a una cita no
+      // deben cambiar durante la reprogramación.
+      if (
+        appointment.doctorId.toString() !== doctorId ||
+        appointment.patientId.toString() !== patientId
+      ) {
+        throw new ConflictException('La cita cambió durante la operación');
+      }
+
+      // 3. Validar el estado actual.
+      this.assertStatus(
+        appointment,
+        [AppointmentStatus.SCHEDULED, AppointmentStatus.CONFIRMED],
+        'reprogramar',
       );
-    }
 
-    const endTime = this.minutesToTime(endMinutes);
+      // 4. Calcular el nuevo horario.
+      const startMinutes = this.timeToMinutes(dto.startTime);
 
-    const { startOfDay } = await this.validateSlot({
-      doctorId: appointment.doctorId.toString(),
-      patientId: appointment.patientId.toString(),
-      date: dto.date,
-      startTime: dto.startTime,
-      endTime,
-      excludeAppointmentId: id,
+      const endMinutes = startMinutes + dto.durationMinutes;
+
+      if (endMinutes > 24 * 60 - 1) {
+        throw new BadRequestException(
+          'La cita reprogramada no puede terminar ' + 'después de las 23:59',
+        );
+      }
+
+      const endTime = this.minutesToTime(endMinutes);
+
+      // 5. Validar el nuevo horario dentro
+      // de la misma transacción.
+      const { startOfDay } = await this.validateSlot(
+        {
+          doctorId,
+          patientId,
+          date: dto.date,
+          startTime: dto.startTime,
+          endTime,
+          excludeAppointmentId: id,
+        },
+        session,
+      );
+
+      const changedAt = new Date();
+
+      // 6. Conservar el horario anterior.
+      appointment.rescheduleHistory = [
+        ...(appointment.rescheduleHistory ?? []),
+        {
+          date: appointment.date,
+          startTime: appointment.startTime,
+          endTime: appointment.endTime,
+          statusBefore: appointment.status,
+          changedAt,
+        },
+      ];
+
+      // 7. Actualizar la cita existente.
+      appointment.date = startOfDay;
+      appointment.startTime = dto.startTime;
+      appointment.endTime = endTime;
+      appointment.status = AppointmentStatus.SCHEDULED;
+
+      appointment.rescheduledAt = changedAt;
+      appointment.confirmedAt = undefined;
+
+      // 8. Guardar dentro de la transacción.
+      await this.saveAppointment(appointment, session);
     });
-
-    const changedAt = new Date();
-
-    appointment.rescheduleHistory = [
-      ...(appointment.rescheduleHistory ?? []),
-      {
-        date: appointment.date,
-        startTime: appointment.startTime,
-        endTime: appointment.endTime,
-        statusBefore: appointment.status,
-        changedAt,
-      },
-    ];
-    appointment.date = startOfDay;
-    appointment.startTime = dto.startTime;
-    appointment.endTime = endTime;
-    appointment.status = AppointmentStatus.SCHEDULED;
-    appointment.rescheduledAt = changedAt;
-    appointment.confirmedAt = undefined;
-
-    await appointment.save();
 
     return this.findOne(id);
   }
@@ -405,7 +479,7 @@ export class AppointmentsService {
     appointment.status = AppointmentStatus.CONFIRMED;
     appointment.confirmedAt = new Date();
 
-    await appointment.save();
+    await this.saveAppointment(appointment);
 
     return this.findOne(id);
   }
@@ -426,7 +500,7 @@ export class AppointmentsService {
     appointment.status = AppointmentStatus.COMPLETED;
     appointment.completedAt = new Date();
 
-    await appointment.save();
+    await this.saveAppointment(appointment);
 
     return this.findOne(id);
   }
@@ -447,7 +521,7 @@ export class AppointmentsService {
     appointment.status = AppointmentStatus.NO_SHOW;
     appointment.noShowAt = new Date();
 
-    await appointment.save();
+    await this.saveAppointment(appointment);
 
     return this.findOne(id);
   }
@@ -466,49 +540,52 @@ export class AppointmentsService {
     return appointment;
   }
 
-  private async validateSlot(input: SlotValidationInput): Promise<{
+  private async validateSlot(
+    input: SlotValidationInput,
+    session: ClientSession,
+  ): Promise<{
     startOfDay: Date;
     endOfDay: Date;
   }> {
-    // 1. Validar la fecha
+    // 1. Validar fecha.
     const { startOfDay, endOfDay } = this.getDateRange(input.date);
 
-    // 2. Validar el formato de las horas
+    // 2. Validar formato y orden de las horas.
     const startMinutes = this.timeToMinutes(input.startTime);
-
     const endMinutes = this.timeToMinutes(input.endTime);
 
-    // 3. Validar el orden del horario
     if (endMinutes <= startMinutes) {
       throw new BadRequestException('endTime debe ser posterior a startTime');
     }
 
-    // 4. Rechazar fechas y horas pasadas
+    // 3. Rechazar citas en el pasado.
     this.assertAppointmentIsInFuture(input.date, input.startTime);
 
-    // 5. Consultar médico y paciente
-    const [doctor, patient] = await Promise.all([
-      this.doctorModel
-        .findById(input.doctorId)
-        .populate('userId', 'fullName email role isActive')
-        .lean()
-        .exec(),
-
-      this.patientModel.findById(input.patientId).lean().exec(),
-    ]);
+    // 4. Consultar el médico dentro de la transacción.
+    const doctor = await this.doctorModel
+      .findById(input.doctorId)
+      .session(session)
+      .populate('userId', 'fullName email role isActive')
+      .lean()
+      .exec();
 
     if (!doctor || !this.isActiveDoctor(doctor)) {
       throw new NotFoundException('Médico no encontrado o inactivo');
     }
 
+    // 5. Consultar el paciente dentro de la transacción.
+    // No usar Promise.all() con la misma sesión.
+    const patient = await this.patientModel
+      .findById(input.patientId)
+      .session(session)
+      .lean()
+      .exec();
+
     if (!patient || !patient.isActive) {
       throw new NotFoundException('Paciente no encontrado o inactivo');
     }
 
-    if (endMinutes <= startMinutes) {
-      throw new BadRequestException('endTime debe ser posterior a startTime');
-    }
-
+    // 6. Obtener el horario laboral del médico.
     const doctorSchedules = this.getSchedulesForDate(
       doctor.schedule ?? [],
       startOfDay,
@@ -520,8 +597,10 @@ export class AppointmentsService {
       );
     }
 
+    // 7. Verificar que la cita esté dentro del horario laboral.
     const isInsideSchedule = doctorSchedules.some((schedule) => {
       const scheduleStart = this.timeToMinutes(schedule.startTime);
+
       const scheduleEnd = this.timeToMinutes(schedule.endTime);
 
       return startMinutes >= scheduleStart && endMinutes <= scheduleEnd;
@@ -533,6 +612,7 @@ export class AppointmentsService {
       );
     }
 
+    // 8. Detectar solapamientos del médico o paciente.
     const conflictFilter: Record<string, any> = {
       date: {
         $gte: startOfDay,
@@ -558,14 +638,17 @@ export class AppointmentsService {
       ],
     };
 
+    // En reprogramaciones se excluye la cita actual.
     if (input.excludeAppointmentId) {
       conflictFilter._id = {
-        $ne: input.excludeAppointmentId,
+        $ne: new Types.ObjectId(input.excludeAppointmentId),
       };
     }
 
+    // 9. Buscar conflictos dentro de la misma transacción.
     const conflict = await this.appointmentModel
       .findOne(conflictFilter)
+      .session(session)
       .lean()
       .exec();
 
@@ -585,15 +668,44 @@ export class AppointmentsService {
     };
   }
 
+  private async saveAppointment(
+    appointment: AppointmentDocument,
+    session?: ClientSession,
+  ): Promise<void> {
+    try {
+      await appointment.save(session ? { session } : {});
+    } catch (error: unknown) {
+      if (error instanceof Error && error.name === 'VersionError') {
+        throw new ConflictException(
+          'La cita fue modificada por otra solicitud. ' +
+            'Consulta su estado actual e intenta nuevamente.',
+        );
+      }
+
+      throw error;
+    }
+  }
+
   private async findAppointmentDocument(
     id: string,
+    session?: ClientSession,
   ): Promise<AppointmentDocument> {
     this.validateMongoId(id);
 
-    const appointment = await this.appointmentModel.findById(id).exec();
+    const query = this.appointmentModel.findById(id);
+
+    if (session) {
+      query.session(session);
+    }
+
+    const appointment = await query.exec();
 
     if (!appointment) {
       throw new NotFoundException('Cita no encontrada');
+    }
+
+    if (!appointment.isActive) {
+      throw new ConflictException('La cita se encuentra inactiva');
     }
 
     return appointment;
@@ -619,6 +731,100 @@ export class AppointmentsService {
     }
   }
 
+  private async lockAgendaResources(
+    doctorId: string,
+    patientId: string,
+    session: ClientSession,
+  ): Promise<void> {
+    if (!Types.ObjectId.isValid(doctorId)) {
+      throw new BadRequestException('El ID del médico no es válido');
+    }
+
+    if (!Types.ObjectId.isValid(patientId)) {
+      throw new BadRequestException('El ID del paciente no es válido');
+    }
+
+    const doctor = await this.doctorModel
+      .findOneAndUpdate(
+        {
+          _id: doctorId,
+          isActive: true,
+        },
+        {
+          $inc: {
+            agendaRevision: 1,
+          },
+        },
+        {
+          session,
+          new: false,
+        },
+      )
+      .select('_id')
+      .exec();
+
+    if (!doctor) {
+      throw new NotFoundException('Médico no encontrado o inactivo');
+    }
+
+    const patient = await this.patientModel
+      .findOneAndUpdate(
+        {
+          _id: patientId,
+          isActive: true,
+        },
+        {
+          $inc: {
+            agendaRevision: 1,
+          },
+        },
+        {
+          session,
+          new: false,
+        },
+      )
+      .select('_id')
+      .exec();
+
+    if (!patient) {
+      throw new NotFoundException('Paciente no encontrado o inactivo');
+    }
+  }
+
+  private async withAgendaTransaction<T>(
+    operation: (session: ClientSession) => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await this.connection.transaction(operation, {
+        readPreference: 'primary',
+        readConcern: {
+          level: 'snapshot',
+        },
+        writeConcern: {
+          w: 'majority',
+        },
+      });
+    } catch (error: unknown) {
+      const mongoError = error as {
+        code?: number;
+        name?: string;
+        hasErrorLabel?: (label: string) => boolean;
+      } | null;
+
+      if (
+        mongoError?.code === 112 ||
+        mongoError?.hasErrorLabel?.('TransientTransactionError')
+      ) {
+        throw new ConflictException(
+          'La agenda está siendo modificada por otra solicitud. ' +
+            'Intenta nuevamente.',
+        );
+      }
+
+      throw error;
+    }
+  }
+
   private isActiveDoctor(doctor: unknown): boolean {
     if (!this.isRecord(doctor) || doctor.isActive !== true) {
       return false;
@@ -626,9 +832,8 @@ export class AppointmentsService {
 
     const user = this.getPopulatedDoctorUser(doctor.userId);
 
-    return user?.isActive !== false;
+    return user?.isActive === true && user?.role === UserRole.DOCTOR;
   }
-
   private getPopulatedDoctorUser(value: unknown): PopulatedDoctorUser | null {
     if (!this.isRecord(value)) {
       return null;
@@ -638,6 +843,7 @@ export class AppointmentsService {
       fullName: value.fullName,
       isActive:
         typeof value.isActive === 'boolean' ? value.isActive : undefined,
+      role: value.role,
     };
   }
 

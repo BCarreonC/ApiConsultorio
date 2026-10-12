@@ -33,6 +33,13 @@ export class Patient {
   @Prop({ required: true, index: true })
   normalizedName: string;
 
+  @Prop({
+    type: Number,
+    default: 0,
+    select: false,
+  })
+  agendaRevision: number;
+
   @Prop({ required: true })
   birthDate: Date;
 
