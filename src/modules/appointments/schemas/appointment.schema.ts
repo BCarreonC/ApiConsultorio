@@ -29,6 +29,7 @@ const AppointmentScheduleHistorySchema = SchemaFactory.createForClass(
 
 @Schema({
   timestamps: true,
+  optimisticConcurrency: true,
 })
 export class Appointment {
   @Prop({
@@ -112,4 +113,22 @@ AppointmentSchema.index({
   status: 1,
   date: 1,
   startTime: 1,
+});
+
+AppointmentSchema.index({
+  doctorId: 1,
+  date: 1,
+  isActive: 1,
+  status: 1,
+  startTime: 1,
+  endTime: 1,
+});
+
+AppointmentSchema.index({
+  patientId: 1,
+  date: 1,
+  isActive: 1,
+  status: 1,
+  startTime: 1,
+  endTime: 1,
 });
